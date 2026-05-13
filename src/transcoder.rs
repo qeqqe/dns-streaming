@@ -1,0 +1,157 @@
+use ffmpeg_next::format;
+
+use std::{error::Error, mem, path::PathBuf};
+
+const MAX_UDP_PAYLOAD: usize = 65_507;
+
+pub struct Transcoder {
+    media_path: PathBuf,
+    chunk_path: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct PacketData {
+    pkt_len: usize,
+    pkt_data: Vec<u8>,
+    is_key: bool,
+}
+
+impl Transcoder {
+    pub fn new(media_path: PathBuf, chunk_path: PathBuf) -> Self {
+        Self {
+            media_path,
+            chunk_path,
+        }
+    }
+
+    pub fn chunk_video(&mut self) -> Result<(), Box<dyn Error>> {
+        ffmpeg_next::init().unwrap();
+        let mut ictx = format::input(&self.media_path)?;
+        let mut octx = format::output(&self.chunk_path)?;
+
+        // this will store a valid frames and make sure it's not in middle of GOP
+        let mut packets_array: Vec<Vec<PacketData>> = vec![];
+
+        // accumulates till length threshold (MAX_UDP_PAYLOAD) and
+        // make sure that the last packet is a key.
+        let mut accumulate_packet: Vec<PacketData> = vec![];
+
+        let mut cur_size: usize = 0;
+
+        let mut is_fragmented_now = false;
+
+        println!("{}", ictx.bit_rate());
+        for (_, mut packets) in ictx.packets() {
+            // 2 bytes is for the u16 size pkt_len which
+            // covers all size till 65535
+            // [pkt_len] [pkt_data] | [pkt_len] [pkt_data] ...
+
+            if cur_size + 2 + packets.size() > MAX_UDP_PAYLOAD {
+                let (non_key_size, last_key_idx) = self.get_last_key_frame(&accumulate_packet);
+                packets_array.push(accumulate_packet.drain(0..last_key_idx).collect());
+                cur_size = non_key_size;
+            }
+
+            // for packets that exceed the max paylod len we transmit it as a
+            // fragmented chunk and send it with a fragment flag over UDP
+            // and let the client handle the fragmented packet and reconstruct it.
+            if packets.size() > MAX_UDP_PAYLOAD {
+                // no neeed for calculating the previous I-keyframe
+                // packet, already chunked it together just
+                // accumulate till next keyframe.
+                is_fragmented_now = true;
+
+                accumulate_packet.push(PacketData {
+                    pkt_len: packets.size(),
+                    pkt_data: (*packets.data().unwrap()).to_vec(),
+                    is_key: packets.is_key(),
+                });
+
+                cur_size += 2 + packets.size();
+                if packets.is_key() {
+                    packets_array.push(mem::take(&mut accumulate_packet));
+                    accumulate_packet = vec![];
+                    is_fragmented_now = false;
+                    cur_size = 0;
+                }
+            }
+
+            if is_fragmented_now {
+                accumulate_packet.push(PacketData {
+                    pkt_len: packets.size(),
+                    pkt_data: (*packets.data().unwrap()).to_vec(),
+                    is_key: packets.is_key(),
+                });
+
+                cur_size += 2 + packets.size();
+
+                if packets.is_key() {
+                    is_fragmented_now = false;
+                    cur_size = 0;
+                    packets_array.push(mem::take(&mut accumulate_packet));
+                    accumulate_packet = vec![];
+                }
+            }
+
+            if cur_size + 2 + packets.size() <= MAX_UDP_PAYLOAD {
+                accumulate_packet.push(PacketData {
+                    pkt_len: packets.size(),
+                    pkt_data: (*packets.data().unwrap()).to_vec(),
+                    is_key: packets.is_key(),
+                });
+                cur_size += 2 + packets.size();
+            }
+        }
+
+        // println!(
+        //     "total of {} out of {} packets were exceeding size ({}%)",
+        //     large,
+        //     large + normal,
+        //     (large as f32 / (large as f32 + normal as f32)) * 100.0
+        // );
+        //
+        if !accumulate_packet.is_empty() {
+            println!("Extra appending fn triggered");
+            // last element must be a key_frame
+            packets_array.push(mem::take(&mut accumulate_packet));
+        }
+
+        for (n, pd) in packets_array.iter().enumerate() {
+            let mut len_acc: usize = 0;
+            for packets in pd {
+                len_acc += packets.pkt_len;
+            }
+            println!("Chunk {}, storing: {} bytes", n, len_acc);
+            if len_acc > MAX_UDP_PAYLOAD {
+                println!("needs fragmenting!")
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn get_last_key_frame(&mut self, accumulate: &Vec<PacketData>) -> (usize, usize) {
+        let mut non_key_size: usize = 0;
+        let mut last_key_idx: usize = accumulate.len() - 1;
+
+        for packets in accumulate.iter().rev() {
+            // packets.is_key() tells taht packet IS a keyframe (I-frame).
+            // meaning the decoder can start fresh from this point
+            // without needing any previous frames.
+            // so only push the frames when its a key.
+
+            if packets.is_key {
+                break;
+            } else {
+                non_key_size = 2 + packets.pkt_len;
+                last_key_idx -= 1;
+            }
+        }
+
+        (non_key_size, last_key_idx)
+    }
+
+    pub fn is_about_overflow(&mut self) -> bool {
+        todo!()
+    }
+}
