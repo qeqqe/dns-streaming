@@ -42,12 +42,21 @@ impl Transcoder {
 
         println!("{}", ictx.bit_rate());
         for (_, mut packets) in ictx.packets() {
+            // these are usually the stream's av metadata
+            // that we're going to ignore
+            if packets.size() == 0 {
+                continue;
+            }
+
             // 2 bytes is for the u16 size pkt_len which
             // covers all size till 65535
             // [pkt_len] [pkt_data] | [pkt_len] [pkt_data] ...
 
-            if cur_size + 2 + packets.size() > MAX_UDP_PAYLOAD {
+            if cur_size + 2 + packets.size() > MAX_UDP_PAYLOAD && !is_fragmented_now {
                 let (non_key_size, last_key_idx) = self.get_last_key_frame(&accumulate_packet);
+
+                // BUG: what if there's no last keyframe in the accumulate??
+                // this will lead to infinite 0 packet being stored...
                 packets_array.push(accumulate_packet.drain(0..last_key_idx).collect());
                 cur_size = non_key_size;
             }
@@ -74,9 +83,7 @@ impl Transcoder {
                     is_fragmented_now = false;
                     cur_size = 0;
                 }
-            }
-
-            if is_fragmented_now {
+            } else if is_fragmented_now {
                 accumulate_packet.push(PacketData {
                     pkt_len: packets.size(),
                     pkt_data: (*packets.data().unwrap()).to_vec(),
@@ -103,13 +110,6 @@ impl Transcoder {
             }
         }
 
-        // println!(
-        //     "total of {} out of {} packets were exceeding size ({}%)",
-        //     large,
-        //     large + normal,
-        //     (large as f32 / (large as f32 + normal as f32)) * 100.0
-        // );
-        //
         if !accumulate_packet.is_empty() {
             println!("Extra appending fn triggered");
             // last element must be a key_frame
@@ -121,7 +121,23 @@ impl Transcoder {
             for packets in pd {
                 len_acc += packets.pkt_len;
             }
-            println!("Chunk {}, storing: {} bytes", n, len_acc);
+            println!(
+                "Chunk {}, storing: {} bytes, packets: {}",
+                n,
+                len_acc,
+                pd.len()
+            );
+            if pd.len() == 3 && len_acc == 144777
+                || pd.len() == 33 && len_acc == 61247
+                || len_acc == 52050 && pd.len() == 33
+            {
+                for (num, packet) in pd.iter().enumerate() {
+                    println!(
+                        "packet {} len: {:#?}, is_key: {}",
+                        num, packet.pkt_len, packet.is_key
+                    );
+                }
+            }
             if len_acc > MAX_UDP_PAYLOAD {
                 println!("needs fragmenting!")
             }
@@ -131,11 +147,14 @@ impl Transcoder {
     }
 
     pub fn get_last_key_frame(&mut self, accumulate: &Vec<PacketData>) -> (usize, usize) {
+        if accumulate.is_empty() {
+            return (0, 0);
+        }
         let mut non_key_size: usize = 0;
-        let mut last_key_idx: usize = accumulate.len() - 1;
+        let mut last_key_idx: usize = accumulate.len();
 
         for packets in accumulate.iter().rev() {
-            // packets.is_key() tells taht packet IS a keyframe (I-frame).
+            // packets.is_key() tells that packet IS a keyframe (I-frame).
             // meaning the decoder can start fresh from this point
             // without needing any previous frames.
             // so only push the frames when its a key.
@@ -143,15 +162,11 @@ impl Transcoder {
             if packets.is_key {
                 break;
             } else {
-                non_key_size = 2 + packets.pkt_len;
-                last_key_idx -= 1;
+                non_key_size += 2 + packets.pkt_len;
+                last_key_idx = last_key_idx.saturating_sub(1);
             }
         }
 
         (non_key_size, last_key_idx)
-    }
-
-    pub fn is_about_overflow(&mut self) -> bool {
-        todo!()
     }
 }

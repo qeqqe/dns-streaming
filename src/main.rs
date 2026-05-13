@@ -10,7 +10,7 @@ async fn main() {
     let mut buf = [0u8; 512];
 
     let mut ts = Transcoder::new(
-        "/home/qeqqer/Watch-List/jjk/480@24.mkv".into(),
+        "/home/qeqqer/Watch-List/jjk/53.mkv".into(),
         "./new_file.mkv".into(),
     );
 
