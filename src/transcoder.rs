@@ -52,13 +52,22 @@ impl Transcoder {
             // covers all size till 65535
             // [pkt_len] [pkt_data] | [pkt_len] [pkt_data] ...
 
-            if cur_size + 2 + packets.size() > MAX_UDP_PAYLOAD && !is_fragmented_now {
-                let (non_key_size, last_key_idx) = self.get_last_key_frame(&accumulate_packet);
+            if cur_size + 2 + packets.size() > MAX_UDP_PAYLOAD {
+                let (mut non_key_size, mut last_key_idx) =
+                    self.get_last_key_frame(&accumulate_packet);
 
-                // BUG: what if there's no last keyframe in the accumulate??
-                // this will lead to infinite 0 packet being stored...
-                packets_array.push(accumulate_packet.drain(0..last_key_idx).collect());
-                cur_size = non_key_size;
+                // what if there's no last keyframe in the accumulate?? [is_key: false, is_key: false...]
+                // last_key_idx will be 0, WHICH means that empty packets will be stored INFINITELY.
+                if last_key_idx == 0 && !accumulate_packet.is_empty() {
+                    non_key_size = accumulate_packet.len();
+                    last_key_idx = 0;
+                }
+
+                // only push when we got something valid to push
+                if last_key_idx > 0 {
+                    packets_array.push(accumulate_packet.drain(0..last_key_idx).collect());
+                    cur_size = non_key_size;
+                }
             }
 
             // for packets that exceed the max paylod len we transmit it as a
