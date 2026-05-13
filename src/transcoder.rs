@@ -51,7 +51,6 @@ impl Transcoder {
             // 2 bytes is for the u16 size pkt_len which
             // covers all size till 65535
             // [pkt_len] [pkt_data] | [pkt_len] [pkt_data] ...
-
             if cur_size + 2 + packets.size() > MAX_UDP_PAYLOAD {
                 let (mut non_key_size, mut last_key_idx) =
                     self.get_last_key_frame(&accumulate_packet);
