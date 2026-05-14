@@ -5,15 +5,16 @@ use std::{error::Error, mem, path::PathBuf};
 const MAX_UDP_PAYLOAD: usize = 65_507;
 
 pub struct Transcoder {
-    media_path: PathBuf,
-    chunk_path: PathBuf,
+    pub media_path: PathBuf,
+    pub chunk_path: PathBuf,
+    pub packet_array: Vec<Vec<PacketData>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PacketData {
-    pkt_len: usize,
-    pkt_data: Vec<u8>,
-    is_key: bool,
+    pub pkt_len: usize,
+    pub pkt_data: Vec<u8>,
+    pub is_key: bool,
 }
 
 impl Transcoder {
@@ -21,6 +22,8 @@ impl Transcoder {
         Self {
             media_path,
             chunk_path,
+            // this will store a valid frames and make sure it's not in middle of GOP
+            packet_array: Vec::new(),
         }
     }
 
@@ -28,9 +31,6 @@ impl Transcoder {
         ffmpeg_next::init().unwrap();
         let mut ictx = format::input(&self.media_path)?;
         let mut octx = format::output(&self.chunk_path)?;
-
-        // this will store a valid frames and make sure it's not in middle of GOP
-        let mut packets_array: Vec<Vec<PacketData>> = vec![];
 
         // accumulates till length threshold (MAX_UDP_PAYLOAD) and
         // make sure that the last packet is a key.
@@ -64,7 +64,8 @@ impl Transcoder {
 
                 // only push when we got something valid to push
                 if last_key_idx > 0 {
-                    packets_array.push(accumulate_packet.drain(0..last_key_idx).collect());
+                    self.packet_array
+                        .push(accumulate_packet.drain(0..last_key_idx).collect());
                     cur_size = non_key_size;
                 }
             }
@@ -86,7 +87,7 @@ impl Transcoder {
 
                 cur_size += 2 + packets.size();
                 if packets.is_key() {
-                    packets_array.push(mem::take(&mut accumulate_packet));
+                    self.packet_array.push(mem::take(&mut accumulate_packet));
                     accumulate_packet = vec![];
                     is_fragmented_now = false;
                     cur_size = 0;
@@ -103,7 +104,7 @@ impl Transcoder {
                 if packets.is_key() {
                     is_fragmented_now = false;
                     cur_size = 0;
-                    packets_array.push(mem::take(&mut accumulate_packet));
+                    self.packet_array.push(mem::take(&mut accumulate_packet));
                     accumulate_packet = vec![];
                 }
             }
@@ -119,9 +120,8 @@ impl Transcoder {
         }
 
         if !accumulate_packet.is_empty() {
-            println!("Extra appending fn triggered");
-            // last element must be a key_frame
-            packets_array.push(mem::take(&mut accumulate_packet));
+            // last element must be a key-frame
+            self.packet_array.push(mem::take(&mut accumulate_packet));
         }
 
         Ok(())
@@ -149,5 +149,13 @@ impl Transcoder {
         }
 
         (non_key_size, last_key_idx)
+    }
+
+    pub fn get_chunk(&mut self, chunk_number: usize) -> Result<&Vec<PacketData>, Box<dyn Error>> {
+        if chunk_number >= self.packet_array.len() {
+            return Err("Invalid range".into());
+        }
+
+        Ok(self.packet_array.get(chunk_number).unwrap())
     }
 }

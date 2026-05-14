@@ -1,12 +1,15 @@
 #![allow(dead_code, unused_variables, unused_mut)]
-use std::{error::Error, net::UdpSocket};
-
-use crate::transcoder::Transcoder;
+use crate::{
+    dns_server::DNSServer,
+    transcoder::{PacketData, Transcoder},
+};
+mod dns_server;
 mod transcoder;
 
 #[tokio::main]
 async fn main() {
-    let socket = UdpSocket::bind("127.0.0.1:5300").unwrap();
+    let mut server = DNSServer::start("127.0.0.1:5300".into()).await;
+
     let mut buf = [0u8; 512];
 
     let mut ts = Transcoder::new(
@@ -17,51 +20,20 @@ async fn main() {
     let _ = ts.chunk_video();
 
     loop {
-        let (len, addr) = socket.recv_from(&mut buf).unwrap();
+        let (len, addr) = server.socket.recv_from(&mut buf).await.unwrap();
         let request = &buf[..len];
 
-        let id = &request[0..2];
-        let query = &request[12..];
+        let (chunk_number, name) = server.parse_request(request);
 
-        let name = parse_query(query);
-        let chunk_number = get_chunk(&name);
+        let chunk: &Vec<PacketData> = ts.get_chunk(chunk_number).unwrap();
+
+        // let chunk_bytes: Vec<u8> = chunk.iter().flat_map(|f| f.pkt_data.clone()).collect();
+        let chunk_bytes = server.construct_response(request, chunk);
+
+        println!("Returning the chunk of size: {}", chunk_bytes.len());
+
+        server.socket.send_to(&chunk_bytes, addr).await.unwrap();
 
         println!("name: {:?}, chunk_number: {:?}", name, chunk_number);
     }
-}
-
-fn is_valid_query(query: &str) -> Result<(), Box<dyn Error>> {
-    let len = query.len();
-    if query.get(0..6).unwrap() == "chunk-" && query.get(len - 7..len).unwrap() == ".local" {
-        Ok(())
-    } else {
-        Err("Invalid Format, Valid format: 'chunk-[chunk-number].local'".into())
-    }
-}
-
-fn parse_query(query: &[u8]) -> String {
-    let mut lables = vec![];
-    let mut i: usize = 0;
-    let q_len = query.len();
-    while query[i] != 0 {
-        let mut len = query[i] as usize;
-        i += 1;
-
-        lables.push(String::from_utf8_lossy(&query[i..i + len]));
-        i += len;
-    }
-
-    lables.join(".")
-}
-
-/// format for chunking
-/// always starts at 6th (includede) char and ends on len - 6th char (excluded)
-/// `chunk-43.local`
-fn get_chunk(query: &str) -> usize {
-    if is_valid_query(query).is_ok() {
-        panic!("Invalid query: {query}");
-    }
-    let len = query.len();
-    let chunk_str = query.get(6..len - 6).unwrap();
-    chunk_str.parse().unwrap()
 }
