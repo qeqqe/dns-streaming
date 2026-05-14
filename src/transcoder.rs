@@ -50,7 +50,7 @@ impl Transcoder {
 
             // 2 bytes is for the u16 size pkt_len which
             // covers all size till 65535
-            // [pkt_len] [pkt_data] | [pkt_len] [pkt_data] ...
+            // [pkt_len] [pkt_data] | [pkt_len] [pkt_data] | ...
             if cur_size + 2 + packets.size() > MAX_UDP_PAYLOAD {
                 let (mut non_key_size, mut last_key_idx) =
                     self.get_last_key_frame(&accumulate_packet);
@@ -122,33 +122,6 @@ impl Transcoder {
             println!("Extra appending fn triggered");
             // last element must be a key_frame
             packets_array.push(mem::take(&mut accumulate_packet));
-        }
-
-        for (n, pd) in packets_array.iter().enumerate() {
-            let mut len_acc: usize = 0;
-            for packets in pd {
-                len_acc += packets.pkt_len;
-            }
-            println!(
-                "Chunk {}, storing: {} bytes, packets: {}",
-                n,
-                len_acc,
-                pd.len()
-            );
-            if pd.len() == 3 && len_acc == 144777
-                || pd.len() == 33 && len_acc == 61247
-                || len_acc == 52050 && pd.len() == 33
-            {
-                for (num, packet) in pd.iter().enumerate() {
-                    println!(
-                        "packet {} len: {:#?}, is_key: {}",
-                        num, packet.pkt_len, packet.is_key
-                    );
-                }
-            }
-            if len_acc > MAX_UDP_PAYLOAD {
-                println!("needs fragmenting!")
-            }
         }
 
         Ok(())
