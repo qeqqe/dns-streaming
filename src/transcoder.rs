@@ -2,6 +2,74 @@ use ffmpeg_next::format;
 
 use std::{error::Error, mem, path::PathBuf};
 
+fn convert_avcc_to_annex_b(data: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(data.len() + 8);
+    let mut i = 0;
+    while i + 4 <= data.len() {
+        let nal_len = u32::from_be_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]) as usize;
+        i += 4;
+        if i + nal_len > data.len() {
+            break;
+        }
+        out.extend_from_slice(&[0, 0, 0, 1]);
+        out.extend_from_slice(&data[i..i + nal_len]);
+        i += nal_len;
+    }
+    out
+}
+
+fn extract_extradata(extradata: &[u8], is_h265: bool) -> Vec<u8> {
+    if extradata.is_empty() || extradata[0] != 1 {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    if is_h265 {
+        if extradata.len() < 23 { return out; }
+        let num_arrays = extradata[22];
+        let mut offset = 23;
+        for _ in 0..num_arrays {
+            if offset + 3 > extradata.len() { break; }
+            let num_nalus = u16::from_be_bytes([extradata[offset + 1], extradata[offset + 2]]) as usize;
+            offset += 3;
+            for _ in 0..num_nalus {
+                if offset + 2 > extradata.len() { break; }
+                let nal_len = u16::from_be_bytes([extradata[offset], extradata[offset + 1]]) as usize;
+                offset += 2;
+                if offset + nal_len > extradata.len() { break; }
+                out.extend_from_slice(&[0, 0, 0, 1]);
+                out.extend_from_slice(&extradata[offset..offset + nal_len]);
+                offset += nal_len;
+            }
+        }
+    } else {
+        if extradata.len() < 7 { return out; }
+        let num_sps = extradata[5] & 0x1f;
+        let mut offset = 6;
+        for _ in 0..num_sps {
+            if offset + 2 > extradata.len() { break; }
+            let sps_len = u16::from_be_bytes([extradata[offset], extradata[offset + 1]]) as usize;
+            offset += 2;
+            if offset + sps_len > extradata.len() { break; }
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend_from_slice(&extradata[offset..offset + sps_len]);
+            offset += sps_len;
+        }
+        if offset >= extradata.len() { return out; }
+        let num_pps = extradata[offset];
+        offset += 1;
+        for _ in 0..num_pps {
+            if offset + 2 > extradata.len() { break; }
+            let pps_len = u16::from_be_bytes([extradata[offset], extradata[offset + 1]]) as usize;
+            offset += 2;
+            if offset + pps_len > extradata.len() { break; }
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend_from_slice(&extradata[offset..offset + pps_len]);
+            offset += pps_len;
+        }
+    }
+    out
+}
+
 const MAX_UDP_PAYLOAD: usize = 65_507;
 
 pub struct Transcoder {
@@ -29,6 +97,30 @@ impl Transcoder {
         ffmpeg_next::init().unwrap();
         let mut ictx = format::input(&self.media_path)?;
 
+        let video_stream_index = ictx
+            .streams()
+            .best(ffmpeg_next::media::Type::Video)
+            .ok_or("no video stream")?
+            .index();
+
+        let sps_pps = {
+            let stream = ictx.stream(video_stream_index).unwrap();
+            let params = stream.parameters();
+            let is_h265 = params.id() == ffmpeg_next::codec::Id::HEVC;
+            let extradata = unsafe {
+                let ptr = params.as_ptr();
+                if (*ptr).extradata.is_null() || (*ptr).extradata_size <= 0 {
+                    &[]
+                } else {
+                    std::slice::from_raw_parts((*ptr).extradata, (*ptr).extradata_size as usize)
+                }
+            };
+            extract_extradata(extradata, is_h265)
+        };
+
+        // convert AVCC (MP4 length-prefixed) to Annex B (start codes)
+        // so the raw H.264 decoder doesn't choke on missing start codes
+
         // accumulates till length threshold (MAX_UDP_PAYLOAD) and
         // make sure that the last packet is a key.
         let mut accumulate_packet: Vec<PacketData> = vec![];
@@ -38,81 +130,100 @@ impl Transcoder {
         let mut is_fragmented_now = false;
 
         println!("{}", ictx.bit_rate());
-        for (_, mut packets) in ictx.packets() {
+        for (stream, packets) in ictx.packets() {
+            if stream.index() != video_stream_index {
+                continue;
+            }
+
             // these are usually the stream's av metadata
             // that we're going to ignore
             if packets.size() == 0 {
                 continue;
             }
 
-            // 2 bytes is for the u16 size pkt_len which
-            // covers all size till 65535
-            // [pkt_len] [pkt_data] | [pkt_len] [pkt_data] | ...
-            if cur_size + 2 + packets.size() > MAX_UDP_PAYLOAD {
-                let (mut non_key_size, mut last_key_idx) =
-                    self.get_last_key_frame(&accumulate_packet);
-
-                // what if there's no last keyframe in the accumulate?? [is_key: false, is_key: false...]
-                // last_key_idx will be 0, WHICH means that empty packets will be stored INFINITELY.
-                if last_key_idx == 0 && !accumulate_packet.is_empty() {
-                    non_key_size = accumulate_packet.len();
-                    last_key_idx = 0;
-                }
-
-                // only push when we got something valid to push
-                if last_key_idx > 0 {
-                    self.packet_array
-                        .push(accumulate_packet.drain(0..last_key_idx).collect());
-                    cur_size = non_key_size;
-                }
+            let is_key = packets.is_key();
+            let raw_data = packets.data().unwrap();
+            let mut pkt_data = convert_avcc_to_annex_b(raw_data);
+            
+            if is_key && !sps_pps.is_empty() {
+                let mut new_pkt = Vec::with_capacity(sps_pps.len() + pkt_data.len());
+                new_pkt.extend_from_slice(&sps_pps);
+                new_pkt.extend_from_slice(&pkt_data);
+                pkt_data = new_pkt;
             }
 
-            // for packets that exceed the max paylod len we transmit it as a
-            // fragmented chunk and send it with a fragment flag over UDP
-            // and let the client handle the fragmented packet and reconstruct it.
-            if packets.size() > MAX_UDP_PAYLOAD {
-                // no neeed for calculating the previous I-keyframe
-                // packet, already chunked it together just
-                // accumulate till next keyframe.
-                is_fragmented_now = true;
+            let pkt_size = pkt_data.len();
+            {
 
-                accumulate_packet.push(PacketData {
-                    pkt_len: packets.size(),
-                    pkt_data: (*packets.data().unwrap()).to_vec(),
-                    is_key: packets.is_key(),
-                });
+                // 2 bytes is for the u16 size pkt_len which
+                // covers all size till 65535
+                // [pkt_len] [pkt_data] | [pkt_len] [pkt_data] | ...
+                if cur_size + 2 + pkt_size > MAX_UDP_PAYLOAD {
+                    let (mut non_key_size, mut last_key_idx) =
+                        self.get_last_key_frame(&accumulate_packet);
 
-                cur_size += 2 + packets.size();
-                if packets.is_key() {
-                    self.packet_array.push(mem::take(&mut accumulate_packet));
-                    accumulate_packet = vec![];
-                    is_fragmented_now = false;
-                    cur_size = 0;
+                    // what if there's no last keyframe in the accumulate?? [is_key: false, is_key: false...]
+                    // last_key_idx will be 0, WHICH means that empty packets will be stored INFINITELY.
+                    if last_key_idx == 0 && !accumulate_packet.is_empty() {
+                        non_key_size = accumulate_packet.len();
+                        last_key_idx = 0;
+                    }
+
+                    // only push when we got something valid to push
+                    if last_key_idx > 0 {
+                        self.packet_array
+                            .push(accumulate_packet.drain(0..last_key_idx).collect());
+                        cur_size = non_key_size;
+                    }
                 }
-            } else if is_fragmented_now {
-                accumulate_packet.push(PacketData {
-                    pkt_len: packets.size(),
-                    pkt_data: (*packets.data().unwrap()).to_vec(),
-                    is_key: packets.is_key(),
-                });
 
-                cur_size += 2 + packets.size();
+                // for packets that exceed the max paylod len we transmit it as a
+                // fragmented chunk and send it with a fragment flag over UDP
+                // and let the client handle the fragmented packet and reconstruct it.
+                if pkt_size > MAX_UDP_PAYLOAD {
+                    // no neeed for calculating the previous I-keyframe
+                    // packet, already chunked it together just
+                    // accumulate till next keyframe.
+                    is_fragmented_now = true;
 
-                if packets.is_key() {
-                    is_fragmented_now = false;
-                    cur_size = 0;
-                    self.packet_array.push(mem::take(&mut accumulate_packet));
-                    accumulate_packet = vec![];
+                    accumulate_packet.push(PacketData {
+                        pkt_len: pkt_size,
+                        pkt_data: pkt_data.clone(),
+                        is_key,
+                    });
+
+                    cur_size += 2 + pkt_size;
+                    if is_key {
+                        self.packet_array.push(mem::take(&mut accumulate_packet));
+                        accumulate_packet = vec![];
+                        is_fragmented_now = false;
+                        cur_size = 0;
+                    }
+                } else if is_fragmented_now {
+                    accumulate_packet.push(PacketData {
+                        pkt_len: pkt_size,
+                        pkt_data: pkt_data.clone(),
+                        is_key,
+                    });
+
+                    cur_size += 2 + pkt_size;
+
+                    if is_key {
+                        is_fragmented_now = false;
+                        cur_size = 0;
+                        self.packet_array.push(mem::take(&mut accumulate_packet));
+                        accumulate_packet = vec![];
+                    }
                 }
-            }
 
-            if cur_size + 2 + packets.size() <= MAX_UDP_PAYLOAD {
-                accumulate_packet.push(PacketData {
-                    pkt_len: packets.size(),
-                    pkt_data: (*packets.data().unwrap()).to_vec(),
-                    is_key: packets.is_key(),
-                });
-                cur_size += 2 + packets.size();
+                if cur_size + 2 + pkt_size <= MAX_UDP_PAYLOAD {
+                    accumulate_packet.push(PacketData {
+                        pkt_len: pkt_size,
+                        pkt_data,
+                        is_key,
+                    });
+                    cur_size += 2 + pkt_size;
+                }
             }
         }
 

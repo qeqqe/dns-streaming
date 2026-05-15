@@ -8,7 +8,7 @@ pub struct DNSClient {
 }
 
 pub struct ChunkData {
-    chunk_bytes: Vec<PacketData>,
+    pub packet_bytes: Vec<PacketData>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,7 +51,16 @@ impl DNSClient {
 
         let mut buf = [0u8; 65536];
 
-        let (len, src) = self.socket.recv_from(&mut buf).await.unwrap();
+        let recv_result = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            self.socket.recv_from(&mut buf),
+        )
+        .await;
+
+        let (len, src) = match recv_result {
+            Ok(Ok(res)) => res,
+            _ => return Err("Timeout or receive error".into()),
+        };
 
         let chunk_num_len = format!("{}", chunk_number).len();
 
@@ -111,11 +120,8 @@ impl DNSClient {
     fn parse_request(&mut self, buf: &[u8], offset: usize, chunk_len: usize) -> ChunkData {
         // layout: [pkt_len] [pkt_data] | [pkt_len] [pkt_data] | ...
         let chunk_bytes = &buf[offset..];
-        let mut chunks: ChunkData = ChunkData {
-            chunk_bytes: Vec::new(),
-        };
 
-        let mut current_packet: Vec<PacketData> = vec![];
+        let mut packet_bytes: Vec<PacketData> = vec![];
 
         let mut idx: usize = 0;
 
@@ -127,12 +133,10 @@ impl DNSClient {
             idx += 2;
             let pkt_data = chunk_bytes[idx..=idx + pkt_len - 1].to_vec();
             let packet_data = PacketData { pkt_len, pkt_data };
-            current_packet.push(packet_data);
+            packet_bytes.push(packet_data);
             idx += pkt_len;
         }
 
-        ChunkData {
-            chunk_bytes: current_packet,
-        }
+        ChunkData { packet_bytes }
     }
 }

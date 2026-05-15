@@ -12,7 +12,8 @@ async fn main() {
 
     let mut buf = [0u8; 512];
 
-    let mut ts = Transcoder::new("/home/qeqqer/Watch-List/jjk/53.mkv".into());
+    let mut ts =
+        Transcoder::new("/home/qeqqer/Watch-List/jjk/[Kayoanime] Jujutsu Kaisen - 51.mkv".into());
 
     let _ = ts.chunk_video();
 
@@ -30,6 +31,11 @@ async fn main() {
 
         println!("Returning the chunk of size: {}", chunk_bytes.len());
         println!("first 2 bytes {:#?}", &chunk_bytes.get(0..2));
+
+        if chunk_bytes.len() > 65507 {
+            println!("Chunk size exceeds MAX_UDP_PAYLOAD (65507). Skipping for now.");
+            continue;
+        }
 
         server.socket.send_to(&chunk_bytes, addr).await.unwrap();
 

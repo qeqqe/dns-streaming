@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 tokio = { version = "1.52.3", features = ['full'] }
+ffmpeg-next = "8.1.0"
+minifb = "0.28.0"
