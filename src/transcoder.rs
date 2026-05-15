@@ -127,7 +127,7 @@ impl Transcoder {
         Ok(())
     }
 
-    pub fn get_last_key_frame(&mut self, accumulate: &Vec<PacketData>) -> (usize, usize) {
+    pub fn get_last_key_frame(&mut self, accumulate: &[PacketData]) -> (usize, usize) {
         if accumulate.is_empty() {
             return (0, 0);
         }

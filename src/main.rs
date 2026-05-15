@@ -25,9 +25,10 @@ async fn main() {
 
         let (chunk_number, name) = server.parse_request(request);
 
+        println!("request {:#?}", &request[0..]);
+
         let chunk: &Vec<PacketData> = ts.get_chunk(chunk_number).unwrap();
 
-        // let chunk_bytes: Vec<u8> = chunk.iter().flat_map(|f| f.pkt_data.clone()).collect();
         let chunk_bytes = server.construct_response(request, chunk);
 
         println!("Returning the chunk of size: {}", chunk_bytes.len());
