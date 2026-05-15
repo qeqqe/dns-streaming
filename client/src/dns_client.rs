@@ -7,6 +7,16 @@ pub struct DNSClient {
     dns_server_ip: String,
 }
 
+pub struct ChunkData {
+    chunk_bytes: Vec<PacketData>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PacketData {
+    pub pkt_len: usize,
+    pub pkt_data: Vec<u8>,
+}
+
 impl DNSClient {
     pub async fn get_client(server_ip: String) -> Self {
         Self {
@@ -29,9 +39,11 @@ impl DNSClient {
     // 00               - null terminator
     // 00 01            - QTYPE (A record)
     // 00 01            - QCLASS (IN)
-    pub async fn request_chunk(&mut self, chunk_number: usize) -> Result<Vec<u8>, Box<dyn Error>> {
+    pub async fn request_chunk(
+        &mut self,
+        chunk_number: usize,
+    ) -> Result<ChunkData, Box<dyn Error>> {
         let request = self.create_dns_request(chunk_number);
-
         self.socket
             .send_to(&request, &self.dns_server_ip)
             .await
@@ -40,9 +52,29 @@ impl DNSClient {
         let mut buf = [0u8; 65536];
 
         let (len, src) = self.socket.recv_from(&mut buf).await.unwrap();
-        println!("response:\n\n{:#?}", &buf[0..len]);
 
-        todo!()
+        let chunk_num_len = format!("{}", chunk_number).len();
+
+        const HEADER_OFFSET: usize = 12;
+        const CHUNK_LIT_OFFSET: usize = 6;
+        const LOCAL_LIT_OFFSET: usize = 5;
+        const ANSWER_HEADER_OFFSET: usize = 15;
+        const LEN_OFFSET: usize = 1;
+
+        let rdlength_offset = HEADER_OFFSET
+            + LEN_OFFSET
+            + CHUNK_LIT_OFFSET
+            + chunk_num_len
+            + LEN_OFFSET
+            + LOCAL_LIT_OFFSET
+            + ANSWER_HEADER_OFFSET;
+
+        let rdlength =
+            ((buf[rdlength_offset] as u16 * 256) + buf[rdlength_offset + 1] as u16) as usize;
+
+        println!("{:#?}", &buf[rdlength_offset..rdlength_offset + 20]);
+
+        Ok(self.parse_request(&buf, rdlength_offset + 2, rdlength))
     }
 
     fn create_dns_request(&mut self, chunk_number: usize) -> Vec<u8> {
@@ -74,5 +106,33 @@ impl DNSClient {
         println!("{:#?}", request);
 
         request
+    }
+
+    fn parse_request(&mut self, buf: &[u8], offset: usize, chunk_len: usize) -> ChunkData {
+        // layout: [pkt_len] [pkt_data] | [pkt_len] [pkt_data] | ...
+        let chunk_bytes = &buf[offset..];
+        let mut chunks: ChunkData = ChunkData {
+            chunk_bytes: Vec::new(),
+        };
+
+        let mut current_packet: Vec<PacketData> = vec![];
+
+        let mut idx: usize = 0;
+
+        while idx < chunk_len {
+            // length is 2 bytes so we need to
+            let pkt_len_bytes = &chunk_bytes[idx..=idx + 1];
+            let pkt_len = ((pkt_len_bytes[0] as u16 * 256) + pkt_len_bytes[1] as u16) as usize;
+
+            idx += 2;
+            let pkt_data = chunk_bytes[idx..=idx + pkt_len - 1].to_vec();
+            let packet_data = PacketData { pkt_len, pkt_data };
+            current_packet.push(packet_data);
+            idx += pkt_len;
+        }
+
+        ChunkData {
+            chunk_bytes: current_packet,
+        }
     }
 }

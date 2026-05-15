@@ -12,10 +12,7 @@ async fn main() {
 
     let mut buf = [0u8; 512];
 
-    let mut ts = Transcoder::new(
-        "/home/qeqqer/Watch-List/jjk/53.mkv".into(),
-        "./new_file.mkv".into(),
-    );
+    let mut ts = Transcoder::new("/home/qeqqer/Watch-List/jjk/53.mkv".into());
 
     let _ = ts.chunk_video();
 
@@ -32,6 +29,7 @@ async fn main() {
         let chunk_bytes = server.construct_response(request, chunk);
 
         println!("Returning the chunk of size: {}", chunk_bytes.len());
+        println!("first 2 bytes {:#?}", &chunk_bytes.get(0..2));
 
         server.socket.send_to(&chunk_bytes, addr).await.unwrap();
 

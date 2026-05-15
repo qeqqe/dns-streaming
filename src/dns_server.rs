@@ -74,13 +74,17 @@ impl DNSServer {
         let mut chunk_bytes: Vec<u8> = vec![];
         for packets in chunk {
             let len_bytes = (packets.pkt_len as u16).to_be_bytes();
+            println!("len bytes: {:#?}", len_bytes);
 
             chunk_bytes.extend_from_slice(&len_bytes);
             chunk_bytes.extend_from_slice(&packets.pkt_data);
         }
+        println!("chunk bytes first: {:#?}", chunk_bytes.get(0..5).unwrap());
 
         let rdlength = chunk_bytes.len() as u16;
+        println!("rdlen: {rdlength}");
         response.extend_from_slice(&rdlength.to_be_bytes()); // RDLENGTH
+        println!("rdlen bytes: {:#?}", &rdlength.to_be_bytes());
         response.extend_from_slice(&chunk_bytes);
 
         println!("{:#?}", response.get(0..12).unwrap());

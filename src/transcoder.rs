@@ -6,7 +6,6 @@ const MAX_UDP_PAYLOAD: usize = 65_507;
 
 pub struct Transcoder {
     pub media_path: PathBuf,
-    pub chunk_path: PathBuf,
     pub packet_array: Vec<Vec<PacketData>>,
 }
 
@@ -18,10 +17,9 @@ pub struct PacketData {
 }
 
 impl Transcoder {
-    pub fn new(media_path: PathBuf, chunk_path: PathBuf) -> Self {
+    pub fn new(media_path: PathBuf) -> Self {
         Self {
             media_path,
-            chunk_path,
             // this will store a valid frames and make sure it's not in middle of GOP
             packet_array: Vec::new(),
         }
@@ -30,7 +28,6 @@ impl Transcoder {
     pub fn chunk_video(&mut self) -> Result<(), Box<dyn Error>> {
         ffmpeg_next::init().unwrap();
         let mut ictx = format::input(&self.media_path)?;
-        let mut octx = format::output(&self.chunk_path)?;
 
         // accumulates till length threshold (MAX_UDP_PAYLOAD) and
         // make sure that the last packet is a key.
