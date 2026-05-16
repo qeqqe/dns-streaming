@@ -10,7 +10,7 @@ them chunk by chunk. Also handles fragmentation w the truncate (TC=1) flag.
 client              server
 |                     |
 |-- chunk-{n}.local-->|
-|<-- chunk bytes ---->|
+|<-- chunk bytes ----|
 ```
 
 ## Usage
