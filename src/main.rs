@@ -29,18 +29,23 @@ async fn main() {
 
         let chunk: &Vec<PacketData> = ts.get_chunk(chunk_number).unwrap();
 
-        let total_chunk_len = chunk.iter().map(|packet| packet.pkt_len).sum::<usize>();
+        let req_body_len = buf[12..].len();
+        const ANSWER_HEADER_LEN: usize = 12;
 
         // fragmentation
-        if total_chunk_len <= 65507 {
+        let chunk_bytes_size = chunk.iter().map(|p| p.pkt_len + 4).sum::<usize>();
+        if chunk_bytes_size <= 65507 - req_body_len - ANSWER_HEADER_LEN {
             let chunk_bytes = server.construct_response(request, chunk);
+            println!("chunk len:{}", chunk_bytes.len());
 
             server.socket.send_to(&chunk_bytes, addr).await.unwrap();
         } else {
             let fragmented_response = server.construct_fragmented_response(request, chunk);
 
             for chunk_bytes in fragmented_response {
+                println!("fragmented chunk len:{}", chunk_bytes.len());
                 server.socket.send_to(&chunk_bytes, addr).await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
             }
         }
     }

@@ -1,4 +1,4 @@
-use std::{error::Error, mem};
+use std::error::Error;
 
 use tokio::net::UdpSocket;
 
@@ -56,21 +56,14 @@ impl DNSServer {
         // answer
         let mut chunk_bytes: Vec<u8> = vec![];
         for packets in chunk {
-            let len_bytes = (packets.pkt_len as u16).to_be_bytes();
-            // println!("len bytes: {:#?}", len_bytes);
-
+            let len_bytes = (packets.pkt_len as u32).to_be_bytes();
             chunk_bytes.extend_from_slice(&len_bytes);
             chunk_bytes.extend_from_slice(&packets.pkt_data);
         }
-        // println!("chunk bytes first: {:#?}", chunk_bytes.get(0..5).unwrap());
 
         let rdlength = chunk_bytes.len() as u16;
-        // println!("rdlen: {rdlength}");
         response.extend_from_slice(&rdlength.to_be_bytes()); // RDLENGTH
-        // println!("rdlen bytes: {:#?}", &rdlength.to_be_bytes());
         response.extend_from_slice(&chunk_bytes);
-
-        // println!("{:#?}", response.get(0..12).unwrap());
 
         response
     }
@@ -81,37 +74,28 @@ impl DNSServer {
         chunk: &Vec<PacketData>,
     ) -> Vec<Vec<u8>> {
         let mut fragmented_response: Vec<Vec<u8>> = vec![];
-        let mut response: Vec<u8> = self.get_response_with_header(request, true);
-        let mut chunk_bytes: Vec<u8> = vec![];
-        let max_payload = 65507 - request.len() - 12;
-        let mut bytes_left = max_payload;
 
+        let mut all_bytes = vec![];
         for packet in chunk {
-            let entry_size = packet.pkt_len;
-
-            // packet doesnt fit >_<.. flush current fragment
-            if entry_size > bytes_left && !chunk_bytes.is_empty() {
-                let rdlength = chunk_bytes.len() as u16;
-                response.extend_from_slice(&rdlength.to_be_bytes());
-                response.append(&mut chunk_bytes);
-                fragmented_response.push(mem::take(&mut response));
-
-                response = self.get_response_with_header(request, true);
-                bytes_left = max_payload;
-            }
-
-            chunk_bytes.extend_from_slice(&(packet.pkt_len as u16).to_be_bytes());
-            chunk_bytes.extend_from_slice(&packet.pkt_data);
-            bytes_left = bytes_left.saturating_sub(entry_size);
+            all_bytes.extend_from_slice(&(packet.pkt_len as u32).to_be_bytes());
+            all_bytes.extend_from_slice(&packet.pkt_data);
         }
 
-        // last fragment so TC=0
-        if !chunk_bytes.is_empty() {
-            response[2] = 0x81;
-            let rdlength = chunk_bytes.len() as u16;
+        let max_payload = 65507 - request.len() - 12 - 2; // 12 for answer header, 2 for RDLENGTH
+
+        let mut offset = 0;
+        while offset < all_bytes.len() {
+            let end = std::cmp::min(offset + max_payload, all_bytes.len());
+            let slice = &all_bytes[offset..end];
+            let is_last = end == all_bytes.len();
+
+            let mut response = self.get_response_with_header(request, !is_last);
+            let rdlength = slice.len() as u16;
             response.extend_from_slice(&rdlength.to_be_bytes());
-            response.append(&mut chunk_bytes);
+            response.extend_from_slice(slice);
+
             fragmented_response.push(response);
+            offset = end;
         }
 
         fragmented_response

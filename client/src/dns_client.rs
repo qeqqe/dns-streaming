@@ -50,17 +50,7 @@ impl DNSClient {
             .unwrap();
 
         let mut buf = [0u8; 65536];
-
-        let recv_result = tokio::time::timeout(
-            std::time::Duration::from_millis(500),
-            self.socket.recv_from(&mut buf),
-        )
-        .await;
-
-        let (len, src) = match recv_result {
-            Ok(Ok(res)) => res,
-            _ => return Err("Timeout or receive error".into()),
-        };
+        let expected_id = (chunk_number as u16).to_be_bytes();
 
         let chunk_num_len = format!("{}", chunk_number).len();
 
@@ -78,12 +68,90 @@ impl DNSClient {
             + LOCAL_LIT_OFFSET
             + ANSWER_HEADER_OFFSET;
 
-        let rdlength =
-            u16::from_be_bytes([buf[rdlength_offset], buf[rdlength_offset + 1]]) as usize;
+        let mut all_chunk_bytes: Vec<u8> = vec![];
+        let mut receiving_fragments = false;
 
-        println!("{:#?}", &buf[rdlength_offset..rdlength_offset + 20]);
+        loop {
+            let recv_result = tokio::time::timeout(
+                std::time::Duration::from_millis(1500),
+                self.socket.recv_from(&mut buf),
+            )
+            .await;
 
-        Ok(self.parse_request(&buf, rdlength_offset + 2, rdlength))
+            let (len, _src) = match recv_result {
+                Ok(Ok(res)) => res,
+                _ => return Err("Timeout or receive error".into()),
+            };
+
+            // ID check
+            if buf[0] != expected_id[0] || buf[1] != expected_id[1] {
+                continue; // Ignore stale packet
+            }
+
+            let flags = u16::from_be_bytes([buf[2], buf[3]]);
+            let tc_flag = (flags >> 9) & 1;
+
+            let rdlength =
+                u16::from_be_bytes([buf[rdlength_offset], buf[rdlength_offset + 1]]) as usize;
+
+            if tc_flag == 1 || receiving_fragments {
+                receiving_fragments = true;
+                all_chunk_bytes
+                    .extend_from_slice(&buf[rdlength_offset + 2..rdlength_offset + 2 + rdlength]);
+
+                if tc_flag == 0 {
+                    return Ok(self.parse_request(&all_chunk_bytes, 0, all_chunk_bytes.len()));
+                }
+            } else {
+                return Ok(self.parse_request(&buf, rdlength_offset + 2, rdlength));
+            }
+        }
+    }
+
+    fn parse_request(&mut self, buf: &[u8], offset: usize, chunk_len: usize) -> ChunkData {
+        // layout: [pkt_len] [pkt_data] | [pkt_len] [pkt_data] | ...
+        let chunk_bytes = &buf[offset..];
+
+        let mut packet_bytes: Vec<PacketData> = vec![];
+
+        let mut idx: usize = 0;
+
+        while idx < chunk_len {
+            if idx + 4 > chunk_len {
+                println!(
+                    "Parse error: not enough bytes for length prefix at idx {}",
+                    idx
+                );
+                break;
+            }
+
+            // length is 4 bytes now!
+            let pkt_len_bytes = &chunk_bytes[idx..=idx + 3];
+            let pkt_len = u32::from_be_bytes([
+                pkt_len_bytes[0],
+                pkt_len_bytes[1],
+                pkt_len_bytes[2],
+                pkt_len_bytes[3],
+            ]) as usize;
+
+            idx += 4;
+
+            if idx + pkt_len > chunk_len {
+                println!(
+                    "Parse error: pkt_len {} exceeds remaining bytes {}",
+                    pkt_len,
+                    chunk_len - idx
+                );
+                break;
+            }
+
+            let pkt_data = chunk_bytes[idx..idx + pkt_len].to_vec();
+            let packet_data = PacketData { pkt_len, pkt_data };
+            packet_bytes.push(packet_data);
+            idx += pkt_len;
+        }
+
+        ChunkData { packet_bytes }
     }
 
     fn create_dns_request(&mut self, chunk_number: usize) -> Vec<u8> {
@@ -96,7 +164,8 @@ impl DNSClient {
         println!("chunk len: {}", chunk_len);
 
         // header
-        request.extend_from_slice(b"\xaa\xbb"); // ID
+        let id = (chunk_number as u16).to_be_bytes();
+        request.extend_from_slice(&id); // ID
         request.extend_from_slice(&[0x01, 0x00]); // flags
         request.extend_from_slice(&[0x00, 0x01]); // QDCOUNT
         request.extend_from_slice(&[0x00, 0x01]); // ANCOUNT
@@ -115,28 +184,5 @@ impl DNSClient {
         println!("{:#?}", request);
 
         request
-    }
-
-    fn parse_request(&mut self, buf: &[u8], offset: usize, chunk_len: usize) -> ChunkData {
-        // layout: [pkt_len] [pkt_data] | [pkt_len] [pkt_data] | ...
-        let chunk_bytes = &buf[offset..];
-
-        let mut packet_bytes: Vec<PacketData> = vec![];
-
-        let mut idx: usize = 0;
-
-        while idx < chunk_len {
-            // length is 2 bytes so we need to
-            let pkt_len_bytes = &chunk_bytes[idx..=idx + 1];
-            let pkt_len = u16::from_be_bytes([pkt_len_bytes[0], pkt_len_bytes[1]]) as usize;
-
-            idx += 2;
-            let pkt_data = chunk_bytes[idx..=idx + pkt_len - 1].to_vec();
-            let packet_data = PacketData { pkt_len, pkt_data };
-            packet_bytes.push(packet_data);
-            idx += pkt_len;
-        }
-
-        ChunkData { packet_bytes }
     }
 }
