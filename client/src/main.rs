@@ -15,7 +15,7 @@ async fn main() {
     let mut client = DNSClient::get_client("127.0.0.1:5300".to_string()).await;
 
     let mut decoder = Decoder::init();
-    
+
     let mut chunk_index = 0;
     let mut window: Option<minifb::Window> = None;
     let mut scaler: Option<Context> = None;
@@ -25,12 +25,15 @@ async fn main() {
         let chunk = match client.request_chunk(chunk_index).await {
             Ok(c) => c,
             Err(_) => {
-                println!("Failed to get chunk {} or timeout. Continuing to next chunk.", chunk_index);
+                println!(
+                    "Failed to get chunk {} or timeout. Continuing to next chunk.",
+                    chunk_index
+                );
                 chunk_index += 1;
                 continue;
             }
         };
-        
+
         let frames = decoder.decode(&chunk).unwrap();
 
         for yuv_frame in &frames {
@@ -69,7 +72,7 @@ async fn main() {
             let stride = rgb_frame.stride(0);
             let data = rgb_frame.data(0);
 
-            // Copy BGRA bytes to u32 buffer for minifb
+            // copy BGRA bytes to u32 buffer for minifb
             let mut buffer = vec![0u32; width * height];
             for y in 0..height {
                 let row_start = y * stride;
@@ -91,7 +94,7 @@ async fn main() {
                 win.update_with_buffer(&buffer, width, height).unwrap();
             }
         }
-        
+
         chunk_index += 1;
     }
 }

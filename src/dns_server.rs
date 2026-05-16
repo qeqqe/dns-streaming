@@ -1,4 +1,4 @@
-use std::error::Error;
+use std::{error::Error, mem};
 
 use tokio::net::UdpSocket;
 
@@ -34,7 +34,7 @@ impl DNSServer {
     }
 
     // aa bb          - ID (echoed)
-    // 81 80          - Flags (response, recursion available)
+    // 81 80          - Flags (response, TC (83 instead of 80, 9th bit), recursion available)
     // 00 01          - QDCOUNT
     // 00 01          - ANCOUNT
     // 00 00          - NSCOUNT
@@ -51,11 +51,82 @@ impl DNSServer {
     // [2 bytes]      - RDLENGTH = chunk payload length
     // [chunk bytes]  - actual data
     pub fn construct_response(&mut self, request: &[u8], chunk: &Vec<PacketData>) -> Vec<u8> {
+        let mut response: Vec<u8> = self.get_response_with_header(request, false);
+
+        // answer
+        let mut chunk_bytes: Vec<u8> = vec![];
+        for packets in chunk {
+            let len_bytes = (packets.pkt_len as u16).to_be_bytes();
+            // println!("len bytes: {:#?}", len_bytes);
+
+            chunk_bytes.extend_from_slice(&len_bytes);
+            chunk_bytes.extend_from_slice(&packets.pkt_data);
+        }
+        // println!("chunk bytes first: {:#?}", chunk_bytes.get(0..5).unwrap());
+
+        let rdlength = chunk_bytes.len() as u16;
+        // println!("rdlen: {rdlength}");
+        response.extend_from_slice(&rdlength.to_be_bytes()); // RDLENGTH
+        // println!("rdlen bytes: {:#?}", &rdlength.to_be_bytes());
+        response.extend_from_slice(&chunk_bytes);
+
+        // println!("{:#?}", response.get(0..12).unwrap());
+
+        response
+    }
+
+    pub fn construct_fragmented_response(
+        &mut self,
+        request: &[u8],
+        chunk: &Vec<PacketData>,
+    ) -> Vec<Vec<u8>> {
+        let mut fragmented_response: Vec<Vec<u8>> = vec![];
+        let mut response: Vec<u8> = self.get_response_with_header(request, true);
+        let mut chunk_bytes: Vec<u8> = vec![];
+        let max_payload = 65507 - request.len() - 12;
+        let mut bytes_left = max_payload;
+
+        for packet in chunk {
+            let entry_size = packet.pkt_len;
+
+            // packet doesnt fit >_<.. flush current fragment
+            if entry_size > bytes_left && !chunk_bytes.is_empty() {
+                let rdlength = chunk_bytes.len() as u16;
+                response.extend_from_slice(&rdlength.to_be_bytes());
+                response.append(&mut chunk_bytes);
+                fragmented_response.push(mem::take(&mut response));
+
+                response = self.get_response_with_header(request, true);
+                bytes_left = max_payload;
+            }
+
+            chunk_bytes.extend_from_slice(&(packet.pkt_len as u16).to_be_bytes());
+            chunk_bytes.extend_from_slice(&packet.pkt_data);
+            bytes_left = bytes_left.saturating_sub(entry_size);
+        }
+
+        // last fragment so TC=0
+        if !chunk_bytes.is_empty() {
+            response[2] = 0x81;
+            let rdlength = chunk_bytes.len() as u16;
+            response.extend_from_slice(&rdlength.to_be_bytes());
+            response.append(&mut chunk_bytes);
+            fragmented_response.push(response);
+        }
+
+        fragmented_response
+    }
+
+    pub fn get_response_with_header(&mut self, request: &[u8], is_fragmented: bool) -> Vec<u8> {
         let mut response: Vec<u8> = vec![];
 
         // header
         response.extend_from_slice(&request[0..2]); // id
-        response.extend_from_slice(&[0x81, 0x80]); // flags
+        if !is_fragmented {
+            response.extend_from_slice(&[0x81, 0x80]); // TC = 0
+        } else {
+            response.extend_from_slice(&[0x83, 0x80]); // TC = 1
+        }
         response.extend_from_slice(&[0x00, 0x01]); // QDCOUNT
         response.extend_from_slice(&[0x00, 0x01]); // ANCOUNT
         response.extend_from_slice(&[0x00, 0x00]); // NSCOUNT
@@ -69,25 +140,6 @@ impl DNSServer {
         response.extend_from_slice(&[0x00, 0x01]); // TYPE A
         response.extend_from_slice(&[0x00, 0x01]); // CLASS IN
         response.extend_from_slice(&[0x00, 0x00, 0x00, 0x00]); // TTL
-
-        // answer
-        let mut chunk_bytes: Vec<u8> = vec![];
-        for packets in chunk {
-            let len_bytes = (packets.pkt_len as u16).to_be_bytes();
-            println!("len bytes: {:#?}", len_bytes);
-
-            chunk_bytes.extend_from_slice(&len_bytes);
-            chunk_bytes.extend_from_slice(&packets.pkt_data);
-        }
-        println!("chunk bytes first: {:#?}", chunk_bytes.get(0..5).unwrap());
-
-        let rdlength = chunk_bytes.len() as u16;
-        println!("rdlen: {rdlength}");
-        response.extend_from_slice(&rdlength.to_be_bytes()); // RDLENGTH
-        println!("rdlen bytes: {:#?}", &rdlength.to_be_bytes());
-        response.extend_from_slice(&chunk_bytes);
-
-        println!("{:#?}", response.get(0..12).unwrap());
 
         response
     }

@@ -24,44 +24,66 @@ fn extract_extradata(extradata: &[u8], is_h265: bool) -> Vec<u8> {
     }
     let mut out = Vec::new();
     if is_h265 {
-        if extradata.len() < 23 { return out; }
+        if extradata.len() < 23 {
+            return out;
+        }
         let num_arrays = extradata[22];
         let mut offset = 23;
         for _ in 0..num_arrays {
-            if offset + 3 > extradata.len() { break; }
-            let num_nalus = u16::from_be_bytes([extradata[offset + 1], extradata[offset + 2]]) as usize;
+            if offset + 3 > extradata.len() {
+                break;
+            }
+            let num_nalus =
+                u16::from_be_bytes([extradata[offset + 1], extradata[offset + 2]]) as usize;
             offset += 3;
             for _ in 0..num_nalus {
-                if offset + 2 > extradata.len() { break; }
-                let nal_len = u16::from_be_bytes([extradata[offset], extradata[offset + 1]]) as usize;
+                if offset + 2 > extradata.len() {
+                    break;
+                }
+                let nal_len =
+                    u16::from_be_bytes([extradata[offset], extradata[offset + 1]]) as usize;
                 offset += 2;
-                if offset + nal_len > extradata.len() { break; }
+                if offset + nal_len > extradata.len() {
+                    break;
+                }
                 out.extend_from_slice(&[0, 0, 0, 1]);
                 out.extend_from_slice(&extradata[offset..offset + nal_len]);
                 offset += nal_len;
             }
         }
     } else {
-        if extradata.len() < 7 { return out; }
+        if extradata.len() < 7 {
+            return out;
+        }
         let num_sps = extradata[5] & 0x1f;
         let mut offset = 6;
         for _ in 0..num_sps {
-            if offset + 2 > extradata.len() { break; }
+            if offset + 2 > extradata.len() {
+                break;
+            }
             let sps_len = u16::from_be_bytes([extradata[offset], extradata[offset + 1]]) as usize;
             offset += 2;
-            if offset + sps_len > extradata.len() { break; }
+            if offset + sps_len > extradata.len() {
+                break;
+            }
             out.extend_from_slice(&[0, 0, 0, 1]);
             out.extend_from_slice(&extradata[offset..offset + sps_len]);
             offset += sps_len;
         }
-        if offset >= extradata.len() { return out; }
+        if offset >= extradata.len() {
+            return out;
+        }
         let num_pps = extradata[offset];
         offset += 1;
         for _ in 0..num_pps {
-            if offset + 2 > extradata.len() { break; }
+            if offset + 2 > extradata.len() {
+                break;
+            }
             let pps_len = u16::from_be_bytes([extradata[offset], extradata[offset + 1]]) as usize;
             offset += 2;
-            if offset + pps_len > extradata.len() { break; }
+            if offset + pps_len > extradata.len() {
+                break;
+            }
             out.extend_from_slice(&[0, 0, 0, 1]);
             out.extend_from_slice(&extradata[offset..offset + pps_len]);
             offset += pps_len;
@@ -144,7 +166,7 @@ impl Transcoder {
             let is_key = packets.is_key();
             let raw_data = packets.data().unwrap();
             let mut pkt_data = convert_avcc_to_annex_b(raw_data);
-            
+
             if is_key && !sps_pps.is_empty() {
                 let mut new_pkt = Vec::with_capacity(sps_pps.len() + pkt_data.len());
                 new_pkt.extend_from_slice(&sps_pps);
@@ -154,7 +176,6 @@ impl Transcoder {
 
             let pkt_size = pkt_data.len();
             {
-
                 // 2 bytes is for the u16 size pkt_len which
                 // covers all size till 65535
                 // [pkt_len] [pkt_data] | [pkt_len] [pkt_data] | ...

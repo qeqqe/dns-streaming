@@ -12,8 +12,10 @@ async fn main() {
 
     let mut buf = [0u8; 512];
 
-    let mut ts =
-        Transcoder::new("/home/qeqqer/Watch-List/jjk/[Kayoanime] Jujutsu Kaisen - 51.mkv".into());
+    let mut ts = Transcoder::new(
+        "/home/qeqqer/Downloads/drive-download-20260510T191742Z-3-001/Vinland Saga - S01E11.mkv"
+            .into(),
+    );
 
     let _ = ts.chunk_video();
 
@@ -23,22 +25,23 @@ async fn main() {
 
         let (chunk_number, name) = server.parse_request(request);
 
-        println!("request {:#?}", &request[0..]);
+        // println!("request {:#?}", &request[0..]);
 
         let chunk: &Vec<PacketData> = ts.get_chunk(chunk_number).unwrap();
 
-        let chunk_bytes = server.construct_response(request, chunk);
+        let total_chunk_len = chunk.iter().map(|packet| packet.pkt_len).sum::<usize>();
 
-        println!("Returning the chunk of size: {}", chunk_bytes.len());
-        println!("first 2 bytes {:#?}", &chunk_bytes.get(0..2));
+        // fragmentation
+        if total_chunk_len <= 65507 {
+            let chunk_bytes = server.construct_response(request, chunk);
 
-        if chunk_bytes.len() > 65507 {
-            println!("Chunk size exceeds MAX_UDP_PAYLOAD (65507). Skipping for now.");
-            continue;
+            server.socket.send_to(&chunk_bytes, addr).await.unwrap();
+        } else {
+            let fragmented_response = server.construct_fragmented_response(request, chunk);
+
+            for chunk_bytes in fragmented_response {
+                server.socket.send_to(&chunk_bytes, addr).await.unwrap();
+            }
         }
-
-        server.socket.send_to(&chunk_bytes, addr).await.unwrap();
-
-        println!("name: {:?}, chunk_number: {:?}", name, chunk_number);
     }
 }

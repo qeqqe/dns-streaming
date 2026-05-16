@@ -79,7 +79,7 @@ impl DNSClient {
             + ANSWER_HEADER_OFFSET;
 
         let rdlength =
-            ((buf[rdlength_offset] as u16 * 256) + buf[rdlength_offset + 1] as u16) as usize;
+            u16::from_be_bytes([buf[rdlength_offset], buf[rdlength_offset + 1]]) as usize;
 
         println!("{:#?}", &buf[rdlength_offset..rdlength_offset + 20]);
 
@@ -128,7 +128,7 @@ impl DNSClient {
         while idx < chunk_len {
             // length is 2 bytes so we need to
             let pkt_len_bytes = &chunk_bytes[idx..=idx + 1];
-            let pkt_len = ((pkt_len_bytes[0] as u16 * 256) + pkt_len_bytes[1] as u16) as usize;
+            let pkt_len = u16::from_be_bytes([pkt_len_bytes[0], pkt_len_bytes[1]]) as usize;
 
             idx += 2;
             let pkt_data = chunk_bytes[idx..=idx + pkt_len - 1].to_vec();
