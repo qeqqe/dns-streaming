@@ -53,15 +53,16 @@ async fn main() {
             }
 
             if window.is_none() {
-                window = Some(
-                    minifb::Window::new(
-                        "Video Player",
-                        yuv_frame.width() as usize,
-                        yuv_frame.height() as usize,
-                        minifb::WindowOptions::default(),
-                    )
-                    .unwrap(),
-                );
+                let mut new_window = minifb::Window::new(
+                    "Video Player",
+                    yuv_frame.width() as usize,
+                    yuv_frame.height() as usize,
+                    minifb::WindowOptions::default(),
+                )
+                .unwrap();
+                // 24 FPS so teh loop doesnt request data as fast as possibile
+                new_window.set_target_fps(24);
+                window = Some(new_window);
             }
 
             let scaler_ctx = scaler.as_mut().unwrap();

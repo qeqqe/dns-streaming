@@ -12,10 +12,7 @@ async fn main() {
 
     let mut buf = [0u8; 512];
 
-    let mut ts = Transcoder::new(
-        "/home/qeqqer/Downloads/drive-download-20260510T191742Z-3-001/Vinland Saga - S01E11.mkv"
-            .into(),
-    );
+    let mut ts = Transcoder::new("/home/qeqqer/Watch-List/jjk/Jujutsu Kaisen - 54.mkv".into());
 
     let _ = ts.chunk_video();
 
@@ -24,8 +21,6 @@ async fn main() {
         let request = &buf[..len];
 
         let (chunk_number, name) = server.parse_request(request);
-
-        // println!("request {:#?}", &request[0..]);
 
         let chunk: &Vec<PacketData> = ts.get_chunk(chunk_number).unwrap();
 

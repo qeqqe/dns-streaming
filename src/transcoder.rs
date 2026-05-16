@@ -176,22 +176,17 @@ impl Transcoder {
 
             let pkt_size = pkt_data.len();
             {
-                // 2 bytes is for the u16 size pkt_len which
-                // covers all size till 65535
+                // 4 bytes is for the u32 size pkt_len
                 // [pkt_len] [pkt_data] | [pkt_len] [pkt_data] | ...
-                if cur_size + 2 + pkt_size > MAX_UDP_PAYLOAD {
+                if cur_size + 4 + pkt_size > MAX_UDP_PAYLOAD {
                     let (mut non_key_size, mut last_key_idx) =
                         self.get_last_key_frame(&accumulate_packet);
 
-                    // what if there's no last keyframe in the accumulate?? [is_key: false, is_key: false...]
-                    // last_key_idx will be 0, WHICH means that empty packets will be stored INFINITELY.
+                    // If there's no keyframe in the buffer, we still MUST flush to avoid dropping frames!
                     if last_key_idx == 0 && !accumulate_packet.is_empty() {
-                        non_key_size = accumulate_packet.len();
-                        last_key_idx = 0;
-                    }
-
-                    // only push when we got something valid to push
-                    if last_key_idx > 0 {
+                        self.packet_array.push(mem::take(&mut accumulate_packet));
+                        cur_size = 0;
+                    } else if last_key_idx > 0 {
                         self.packet_array
                             .push(accumulate_packet.drain(0..last_key_idx).collect());
                         cur_size = non_key_size;
@@ -202,9 +197,6 @@ impl Transcoder {
                 // fragmented chunk and send it with a fragment flag over UDP
                 // and let the client handle the fragmented packet and reconstruct it.
                 if pkt_size > MAX_UDP_PAYLOAD {
-                    // no neeed for calculating the previous I-keyframe
-                    // packet, already chunked it together just
-                    // accumulate till next keyframe.
                     is_fragmented_now = true;
 
                     accumulate_packet.push(PacketData {
@@ -213,7 +205,7 @@ impl Transcoder {
                         is_key,
                     });
 
-                    cur_size += 2 + pkt_size;
+                    cur_size += 4 + pkt_size;
                     if is_key {
                         self.packet_array.push(mem::take(&mut accumulate_packet));
                         accumulate_packet = vec![];
@@ -227,7 +219,7 @@ impl Transcoder {
                         is_key,
                     });
 
-                    cur_size += 2 + pkt_size;
+                    cur_size += 4 + pkt_size;
 
                     if is_key {
                         is_fragmented_now = false;
@@ -237,19 +229,22 @@ impl Transcoder {
                     }
                 }
 
-                if cur_size + 2 + pkt_size <= MAX_UDP_PAYLOAD {
+                if cur_size + 4 + pkt_size <= MAX_UDP_PAYLOAD
+                    && pkt_size <= MAX_UDP_PAYLOAD
+                    && !is_fragmented_now
+                {
                     accumulate_packet.push(PacketData {
                         pkt_len: pkt_size,
                         pkt_data,
                         is_key,
                     });
-                    cur_size += 2 + pkt_size;
+                    cur_size += 4 + pkt_size;
                 }
             }
         }
 
         if !accumulate_packet.is_empty() {
-            // last element must be a key-frame
+            // flush remaining
             self.packet_array.push(mem::take(&mut accumulate_packet));
         }
 
@@ -272,7 +267,7 @@ impl Transcoder {
             if packets.is_key {
                 break;
             } else {
-                non_key_size += 2 + packets.pkt_len;
+                non_key_size += 4 + packets.pkt_len;
                 last_key_idx = last_key_idx.saturating_sub(1);
             }
         }
