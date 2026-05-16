@@ -10,9 +10,18 @@ mod transcoder;
 async fn main() {
     let mut server = DNSServer::start("127.0.0.1:5300".into()).await;
 
+    let args = std::env::args().collect::<Vec<String>>();
+
+    if args.len() < 2 {
+        eprintln!("Usage: {} <video_path>", args[0]);
+        return;
+    }
+
+    let media_path = &args[1];
+
     let mut buf = [0u8; 512];
 
-    let mut ts = Transcoder::new("/home/qeqqer/Watch-List/jjk/Jujutsu Kaisen - 54.mkv".into());
+    let mut ts = Transcoder::new(media_path.into());
 
     let _ = ts.chunk_video();
 
